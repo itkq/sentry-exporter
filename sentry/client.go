@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"path"
 	"time"
 )
 
@@ -15,122 +16,84 @@ type Client struct {
 	apiEndpoint     string
 	organizationOrg string
 	apiTimeout      time.Duration
+	httpClient      *http.Client
 }
 
-type EventCountsForOrgV2Response struct {
-	Start     string                     `json:"start"`
-	End       string                     `json:"end"`
-	Intervals []string                   `json:"intervals"`
-	Groups    []EventCountsForOrgV2Group `json:"groups"`
-}
-
-type EventCountsForOrgV2Group struct {
-	By     EventCountsForOrgV2GroupBy `json:"by"`
-	Totals map[string]int             `json:"totals"`
-	Series map[string][]int           `json:"series"`
-}
-
-type EventCountsForOrgV2GroupBy struct {
-	Outcome int `json:"outcome"`
-	Project int `json:"project"`
-}
-
-func NewClient(apiKey string, apiEndpoint string, organizationSlug string) *Client {
+func NewDefaultClient(apiKey string, apiEndpoint string, organizationSlug string) *Client {
 	return &Client{
 		apiKey:          apiKey,
 		apiEndpoint:     apiEndpoint,
 		organizationOrg: organizationSlug,
 		apiTimeout:      5 * time.Second,
+		httpClient:      &http.Client{},
 	}
 }
 
-type RetrieveEventCountsForOrgV2Request struct {
-	StatsPeriod string
-	Interval    string
-	Start       string
-	End         string
-	GroupBy     []string
-	Field       string // TODO: validate
-	Project     []string
-	Category    string // TODO: enum
-	Outcome     string // TODO: enum
-	Reason      string
+type requestParams struct {
+	method       string
+	subPath      string
+	queries      map[string]string
+	arrayQueries map[string][]string
 }
 
-// https://docs.sentry.io/api/organizations/retrieve-event-counts-for-an-organization-v2/
-func (c *Client) RetrieveEventCountsForOrgV2(ctx context.Context, input *RetrieveEventCountsForOrgV2Request) (*EventCountsForOrgV2Response, error) {
+func (c *Client) doAPIRequest(ctx context.Context, params *requestParams, out interface{}) error {
 	ctx, cancel := context.WithTimeout(ctx, c.apiTimeout)
+
 	defer cancel()
 
-	baseUrl, err := url.Parse(c.apiEndpoint)
+	req, err := c.newRequest(ctx, params)
 	if err != nil {
-		return nil, err
-	}
-	// XXX: tailing slash is required
-	baseUrl.Path = baseUrl.Path + fmt.Sprintf("organizations/%s/stats_v2/", c.organizationOrg)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseUrl.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	query := req.URL.Query()
-
-	// required from here
-	for _, g := range input.GroupBy {
-		query.Add("groupBy", g)
-	}
-	query.Add("field", input.Field)
-
-	// non-required from here
-	if input.StatsPeriod != "" {
-		query.Add("statsPeriod", input.StatsPeriod)
-	}
-	if input.Interval != "" {
-		query.Add("interval", input.Interval)
-	}
-	if input.Start != "" {
-		query.Add("start", input.Start)
-	}
-	if input.End != "" {
-		query.Add("end", input.End)
-	}
-	for _, p := range input.Project {
-		query.Add("project", p)
-	}
-	if input.Category != "" {
-		query.Add("category", input.Category)
-	}
-	if input.Outcome != "" {
-		query.Add("outcome", input.Outcome)
-	}
-	if input.Reason != "" {
-		query.Add("reason", input.Reason)
+		return err
 	}
 
-	req.URL.RawQuery = query.Encode()
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		fmt.Printf("error body: %s\n", string(body))
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	var out EventCountsForOrgV2Response
-	err = json.Unmarshal(body, &out)
+	err = json.Unmarshal(body, out)
+
+	return err
+}
+
+func (c *Client) newRequest(ctx context.Context, params *requestParams) (*http.Request, error) {
+	url, err := url.Parse(c.apiEndpoint)
 	if err != nil {
 		return nil, err
 	}
 
-	return &out, nil
+	url.Path = path.Join(url.Path, params.subPath) + "/" // XXX: trailing slash is required
+
+	req, err := http.NewRequestWithContext(ctx, params.method, url.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	query := req.URL.Query()
+
+	for k, v := range params.queries {
+		query.Add(k, v)
+	}
+
+	for k, vs := range params.arrayQueries {
+		for _, v := range vs {
+			query.Add(k, v)
+		}
+	}
+
+	req.URL.RawQuery = query.Encode()
+
+	return req, nil
 }

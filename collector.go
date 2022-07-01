@@ -12,8 +12,9 @@ import (
 )
 
 type Collector struct {
-	logger log.Logger
-	client *sentry.Client
+	logger         log.Logger
+	client         *sentry.Client
+	projectSlugMap map[int]string
 
 	errors       *prometheus.Desc
 	transactions *prometheus.Desc
@@ -23,21 +24,22 @@ const (
 	prometheusNamespace = "sentry"
 )
 
-func NewCollector(logger log.Logger, client *sentry.Client) *Collector {
+func NewCollector(logger log.Logger, client *sentry.Client, projectSlugMap map[int]string) *Collector {
 	return &Collector{
-		logger: logger,
-		client: client,
+		logger:         logger,
+		client:         client,
+		projectSlugMap: projectSlugMap,
 
 		errors: prometheus.NewDesc(
 			prometheus.BuildFQName(prometheusNamespace, "", "errors_total"),
 			"Total errors",
-			[]string{"project"},
+			[]string{"project", "project_slug"},
 			nil,
 		),
 		transactions: prometheus.NewDesc(
 			prometheus.BuildFQName(prometheusNamespace, "", "transactions_total"),
 			"Total transactions",
-			[]string{"project"},
+			[]string{"project", "project_slug"},
 			nil,
 		),
 	}
@@ -53,6 +55,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		defer waitGroup.Done()
 		if err := c.collectErrorsByProject(ctx, ch); err != nil {
 			level.Error(c.logger).Log(err)
+			fmt.Println(err)
 		}
 	}()
 
@@ -61,6 +64,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		defer waitGroup.Done()
 		if err := c.collectTransactionsByProject(ctx, ch); err != nil {
 			level.Error(c.logger).Log(err)
+			fmt.Println(err)
 		}
 	}()
 
@@ -83,11 +87,16 @@ func (c *Collector) collectErrorsByProject(ctx context.Context, ch chan<- promet
 	}
 
 	for _, g := range resp.Groups {
+		slug, ok := c.projectSlugMap[g.By.Project]
+		if !ok {
+			slug = ""
+		}
 		ch <- prometheus.MustNewConstMetric(
 			c.errors,
 			prometheus.CounterValue,
 			float64(g.Totals["sum(quantity)"]),
 			fmt.Sprint(g.By.Project),
+			slug,
 		)
 	}
 
@@ -110,11 +119,16 @@ func (c *Collector) collectTransactionsByProject(ctx context.Context, ch chan<- 
 	}
 
 	for _, g := range resp.Groups {
+		slug, ok := c.projectSlugMap[g.By.Project]
+		if !ok {
+			slug = ""
+		}
 		ch <- prometheus.MustNewConstMetric(
 			c.transactions,
 			prometheus.CounterValue,
 			float64(g.Totals["sum(quantity)"]),
 			fmt.Sprint(g.By.Project),
+			slug,
 		)
 	}
 

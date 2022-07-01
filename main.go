@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/go-kit/log/level"
@@ -26,6 +29,7 @@ var (
 func main() {
 	os.Exit(run())
 }
+
 func run() int {
 	promlogConfig := &promlog.Config{}
 	flag.AddFlags(kingpin.CommandLine, promlogConfig)
@@ -34,8 +38,14 @@ func run() int {
 	kingpin.Parse()
 	logger := promlog.New(promlogConfig)
 
-	client := sentry.NewClient(*sentryApiKey, *sentryApiEndpoint, *sentryOrganizationSlug)
-	collector := NewCollector(logger, client)
+	client := sentry.NewDefaultClient(*sentryApiKey, *sentryApiEndpoint, *sentryOrganizationSlug)
+	mp, err := fetchProjectSlugMap(client)
+	if err != nil {
+		fmt.Println(err)
+		return 1
+	}
+
+	collector := NewCollector(logger, client, mp)
 
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collector)
@@ -73,4 +83,22 @@ func run() int {
 			return 1
 		}
 	}
+}
+
+func fetchProjectSlugMap(sentryClient *sentry.Client) (map[int]string, error) {
+	resp, err := sentryClient.ListOrganizationProjects(context.TODO())
+	if err != nil {
+		return nil, err
+	}
+
+	mp := make(map[int]string, 0)
+	for _, p := range resp {
+		id, err := strconv.Atoi(p.Id)
+		if err != nil {
+			return nil, err
+		}
+		mp[id] = p.Slug
+	}
+
+	return mp, nil
 }
